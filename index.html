@@ -1,0 +1,395 @@
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-15Y3604LRN"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-15Y3604LRN');
+    </script>
+    <meta charset="utf-8">
+    <title>Buy Button</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  </head>
+  <body>
+
+
+    <script>
+        localStorage.setItem("SANDS_UTM", '{"utm_source":"local_dev","utm_medium":"test","utm_campaign":"demo"}');
+        // 1. CAPTURE UTM PARAMETERS FROM URL
+        (function() {
+            function getUTMParams() {
+                const urlParams = new URLSearchParams(window.location.search);
+                const utmData = {};
+                const fields = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"];
+                let found = false;
+
+                fields.forEach(f => {
+                    if (urlParams.get(f)) {
+                        utmData[f] = urlParams.get(f);
+                        found = true;
+                    }
+                });
+
+                if (found) {
+                    localStorage.setItem("SANDS_UTM", JSON.stringify(utmData));
+                }
+            }
+
+            getUTMParams();
+        })();
+    </script>
+
+
+
+<!-- Product list container -->
+<div id="product-list" style="max-width:1100px;margin:24px auto;"></div>
+
+<script>
+  (function () {
+    // ============================================
+    // CONFIGURATION - Dual Token Authentication
+    // ============================================
+    
+    // Shopify Storefront API
+    var domain = 'simon-and-schuster-dev.myshopify.com';
+    var token  = 'fa60e6d76fe042b8221f01d34419a020'; // Shopify Storefront Access Token
+    var apiUrl = 'https://' + domain + '/api/2025-01/graphql.json';
+    
+    // SNS Application Configuration
+    // For local development: 'http://localhost:3000'
+    // For production: 'https://your-sns-app.fly.dev'
+    // var snsAppUrl = 'https://univ-ultimate-reprint-car.trycloudflare.com';
+    // var snsAppToken = '384dfb30a06149874ff0b659319da703'; // local
+    
+    var snsAppUrl = 'https://simon-dev.glassboxx.com';
+    var snsAppToken = '15b066ab7f653471b0d6788e993a539e'; // SNS Application Token (generated in admin panel)
+    
+    // ============================================
+    // SDK Configuration
+    // ============================================
+    
+    // DEVELOPMENT: Use dev server for auto-reload (run 'yarn dev' in buy-button-js)
+    var sdkUrl = './buybutton.min.js';
+    // var sdkUrl = '../../buy-button-js/dist/buybutton.min.js';
+    
+    
+    // PRODUCTION: Uncomment to use local minified build
+    // var sdkUrl = '/Users/admin/Documents/cosplay/shopify-app/buy-button-js/dist/buybutton.min.js';
+
+    var css = `
+    .pl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}
+    .pl-card{border:1px solid rgba(0,0,0,.1);border-radius:10px;padding:12px;overflow:hidden;background:#fff}
+    .pl-card.dark{background:#fff;border-color:rgba(0,0,0,.1)}
+    .pl-img{width:100%;height:220px;object-fit:cover;border-radius:8px;background:#f4f4f5}
+    .pl-title{margin:10px 0 6px;font-size:15px;line-height:1.3}
+    .pl-price{opacity:.85;font-size:14px;margin-bottom:10px}
+    .pl-mount{margin-top:6px}
+    .pl-actions{display:flex;justify-content:center;margin-top:16px}
+    .pl-btn{padding:10px 16px;border-radius:8px;border:1px solid #ddd;cursor:pointer;background:#fff}
+    .pl-btn.dark{background:#fff;color:inherit;border-color:#ddd}
+    `;
+    var style = document.createElement('style'); style.innerText = css;
+    (document.head || document.body).appendChild(style);
+
+    function buyButtonOptions() {
+      return {
+        product: {
+          styles: {
+            product: {
+              '@media (min-width: 601px)': {
+                'max-width': 'calc(25% - 20px)',
+                'margin-left': '20px',
+                'margin-bottom': '50px'
+              }
+            },
+            button: {
+              ':hover': { 'background-color': '#1d1f1d' },
+              'background-color': '#111211',
+              ':focus': { 'background-color': '#1d1f1d' }
+            }
+          },
+          contents: { img: false, title: false, price: false },
+          text: { button: 'Buy From Us' }
+        },
+        productSet: { styles: { products: { '@media (min-width: 601px)': { 'margin-left': '-20px' } } } },
+        modalProduct: {
+          contents: { img: false, imgWithCarousel: true, button: false, buttonWithQuantity: true },
+          styles: {
+            product: { '@media (min-width: 601px)': { 'max-width': '100%', 'margin-left': '0px', 'margin-bottom': '0px' } },
+            button: { ':hover': { 'background-color': '#1d1f1d' }, 'background-color': '#111211', ':focus': { 'background-color': '#1d1f1d' } }
+          },
+          text: { button: 'Add to cart' }
+        },
+        option: {},
+        cart: {
+            // 🧪 TESTING: Custom GraphQL Mode - Testing fixed fragment
+            // CURRENT MODE: Custom GraphQL (with requiresShipping field)
+            useCustomGraphQL: true,
+            
+            styles: {
+                button: {
+                    ':hover': { 'background-color': '#1d1f1d' },
+                    'background-color': '#111211',
+                    ':focus': { 'background-color': '#1d1f1d' }
+                }
+            },
+            text: {
+                total: 'Subtotal',
+                notice: 'Taxes and shipping calculated at checkout.',
+                button: 'Checkout'
+            },
+            popup: false,
+            events: {
+                afterInit: (cart) => {
+                    cart.onCheckout = () => {
+                        const checkoutUrl = cart.model.webUrl;
+                        cart.checkout.open(checkoutUrl);
+                    };
+                },
+            }
+        },
+
+        toggle: { styles: { toggle: { 'background-color': '#111211', ':hover': { 'background-color': '#1d1f1d' }, ':focus': { 'background-color': '#1d1f1d' } } } }
+      };
+    }
+
+    function ensureSDK() {
+      return new Promise(function(resolve, reject){
+        if (window.ShopifyBuy && window.ShopifyBuy.UI) return resolve();
+        var s = document.createElement('script'); 
+        s.async = true; 
+        s.src = sdkUrl; 
+        s.onload = resolve;
+        s.onerror = function() {
+          reject(new Error('Failed to load SDK from ' + sdkUrl + '. Make sure dev server is running (yarn dev in buy-button-js)'));
+        };
+        (document.head || document.body).appendChild(s);
+      });
+    }
+    function buildClient() { 
+      return ShopifyBuy.buildClient({ 
+        domain: domain, 
+        storefrontAccessToken: token,
+        snsAppToken: snsAppToken // SNS Application authentication token
+      }); 
+    }
+
+    async function fetchProductsPage(opts) {
+      var queryString = (opts && opts.query) || '';
+      var first       = (opts && opts.pageSize) || 12;
+      var after       = (opts && opts.after) || null;
+
+      var resp = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+        body: JSON.stringify({
+          query: `
+            query($q:String, $first:Int!, $after:String) {
+              products(first: $first, query: $q, after: $after) {
+                edges { cursor node { 
+                  id title handle availableForSale 
+                  images(first:1){nodes{url altText width height}} 
+                  priceRange { minVariantPrice{amount currencyCode} maxVariantPrice{amount currencyCode} }
+                  metafield(namespace: "nogin", key: "scheduled_publish_date") { value }
+                  variants(first: 50) { edges { node { id title availableForSale quantityAvailable } } }
+                } }
+                pageInfo { hasNextPage endCursor }
+              }
+            }`,
+          variables: { q: queryString || null, first: first, after: after }
+        })
+      });
+      var json = await resp.json();
+      if (!json.data || !json.data.products) { throw new Error('Storefront error: ' + JSON.stringify(json.errors || json)); }
+      return json.data.products;
+    }
+
+    var DEBUG_BUY_RULES = true;
+
+    function fmtMoney(price) { if (!price) return ''; var a = Number(price.amount || 0).toFixed(2); return '$' + a; }
+    function priceText(range) {
+      if (!range) return ''; var min = range.minVariantPrice, max = range.maxVariantPrice;
+      if (!min || !max) return ''; if (min.amount === max.amount) return fmtMoney(min);
+      return fmtMoney(min) + ' - ' + fmtMoney(max);
+    }
+
+    /**
+     * Check if product is purchasable based on buy button display rules:
+     * 1. Onsale date (nogin.scheduled_publish_date) is today or prior in EST
+     * 2. Inventory 5+ or digital product (-1)
+     */
+    function isProductPurchasable(product) {
+      // Rule 1: Check onsale date (EST)
+      var scheduledPublishDate = product.metafield?.value;
+      if (scheduledPublishDate) {
+        var publishDate = new Date(scheduledPublishDate);
+        // Get current date in EST (America/New_York)
+        var now = new Date();
+        var estFormatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        });
+        var estParts = estFormatter.formatToParts(now);
+        var estYear = parseInt(estParts.find(p => p.type === 'year').value, 10);
+        var estMonth = parseInt(estParts.find(p => p.type === 'month').value, 10) - 1;
+        var estDay = parseInt(estParts.find(p => p.type === 'day').value, 10);
+        var todayEST = new Date(estYear, estMonth, estDay);
+        
+        // Compare dates (ignoring time)
+        var publishDateOnly = new Date(
+          publishDate.getFullYear(),
+          publishDate.getMonth(),
+          publishDate.getDate()
+        );
+        
+        if (publishDateOnly > todayEST) {
+          if (DEBUG_BUY_RULES) {
+            console.log('[buy-rules] hide (scheduled date in future)', {
+              title: product.title,
+              handle: product.handle,
+              scheduledPublishDate: scheduledPublishDate,
+            });
+          }
+          return false; // Not yet on sale
+        }
+      }
+      
+      // Rule 2: Check inventory threshold (5+ or -1 for digital)
+      // NOTE: On many shops, Storefront API returns quantityAvailable: null.
+      // In a demo-only (no backend) setup, the only safe way to enforce the rule is to FAIL CLOSED.
+      var variantEdges = product.variants?.edges || [];
+      var quantities = variantEdges.map(function(e) { return e && e.node && e.node.quantityAvailable; });
+
+      var maxQty = quantities.reduce(function(acc, q) {
+        if (q === null || q === undefined) {
+          return acc;
+        }
+        return Math.max(acc, q);
+      }, -Infinity);
+
+      if (maxQty === -Infinity) {
+        if (DEBUG_BUY_RULES) {
+          console.log('[buy-rules] hide (inventory unavailable from Storefront)', {
+            title: product.title,
+            handle: product.handle,
+            scheduledPublishDate: scheduledPublishDate,
+            quantities: quantities,
+          });
+        }
+        return false;
+      }
+
+      // -1 indicates digital product
+      if (maxQty === -1) {
+        if (DEBUG_BUY_RULES) {
+          console.log('[buy-rules] show (digital product)', {
+            title: product.title,
+            handle: product.handle,
+            scheduledPublishDate: scheduledPublishDate,
+            maxQty: maxQty,
+            quantities: quantities,
+          });
+        }
+        return true;
+      }
+
+      // Threshold: quantityAvailable must be > 5 for physical products
+      if (maxQty <= 5) {
+        if (DEBUG_BUY_RULES) {
+          console.log('[buy-rules] hide (inventory below threshold)', {
+            title: product.title,
+            handle: product.handle,
+            scheduledPublishDate: scheduledPublishDate,
+            maxQty: maxQty,
+            quantities: quantities,
+          });
+        }
+        return false;
+      }
+
+      if (DEBUG_BUY_RULES) {
+        console.log('[buy-rules] show (inventory ok)', {
+          title: product.title,
+          handle: product.handle,
+          scheduledPublishDate: scheduledPublishDate,
+          maxQty: maxQty,
+          quantities: quantities,
+        });
+      }
+      return true;
+    }
+
+    function createCard(parent, product) {
+      var card = document.createElement('div'); card.className = 'pl-card';
+      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) card.classList.add('dark');
+      var imgUrl = product.images?.nodes?.[0]?.url || ''; var imgAlt = product.images?.nodes?.[0]?.altText || product.title || '';
+      var img = document.createElement('img'); img.className = 'pl-img'; img.alt = imgAlt; if (imgUrl) img.src = imgUrl;
+      var title = document.createElement('div'); title.className = 'pl-title'; title.textContent = product.title || 'Product';
+      var price = document.createElement('div'); price.className = 'pl-price'; price.textContent = priceText(product.priceRange);
+      var mount = document.createElement('div'); mount.className = 'pl-mount';
+      card.appendChild(img); card.appendChild(title); card.appendChild(price); card.appendChild(mount); parent.appendChild(card);
+      return mount;
+    }
+
+    async function renderProductListing(opts) {
+      try {
+        await ensureSDK(); 
+        var client = buildClient();
+        
+        // Initialize UI with SNS configuration
+        var ui = ShopifyBuy.UI.init(client, {}, '', {
+          snsAppUrl: snsAppUrl,
+          enabled: true
+        });
+        
+        var root = document.getElementById('product-list'); root.innerHTML = '';
+        var grid = document.createElement('div'); grid.className = 'pl-grid'; root.appendChild(grid);
+        var query = (opts && opts.query) || 'available_for_sale:true';
+        var pageSize = (opts && opts.pageSize) || 8; var endCursor = null, hasNext = false;
+
+        async function loadPage(after) {
+          var data = await fetchProductsPage({ query: query, pageSize: pageSize, after: after });
+          hasNext = !!(data.pageInfo && data.pageInfo.hasNextPage); endCursor = data.pageInfo ? data.pageInfo.endCursor : null;
+
+          for (var i = 0; i < (data.edges || []).length; i++) {
+            var p = data.edges[i].node; var mount = createCard(grid, p);
+
+            // Apply buy button display rules
+            if (isProductPurchasable(p)) {
+              ui.createComponent('product', { id: p.id.replace('gid://shopify/Product/',''), node: mount, moneyFormat: '%24%7B%7Bamount%7D%7D', options: buyButtonOptions() });
+            }
+            // If not purchasable, the card is shown but no buy button is rendered
+          }
+        }
+
+        await loadPage(null);
+        var actions = document.createElement('div'); actions.className = 'pl-actions';
+        var more = document.createElement('button'); more.className = 'pl-btn'; more.textContent = 'Load more';
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) more.classList.add('dark');
+        more.onclick = async function(){ more.disabled = true; await loadPage(endCursor); more.disabled = false; if (!hasNext) actions.style.display = 'none'; };
+        if (hasNext) { actions.appendChild(more); root.appendChild(actions); }
+      } catch (error) {
+        console.error('Error initializing buy button:', error);
+        var root = document.getElementById('product-list');
+        root.innerHTML = '<div style="padding:20px;text-align:center;color:red;">' +
+          '<h3>⚠️ Development Server Error</h3>' +
+          '<p>' + error.message + '</p>' +
+          '<p>Please run: <code>yarn dev</code> in the buy-button-js directory</p>' +
+          '</div>';
+      }
+    }
+
+    window.renderProductListing = renderProductListing;
+    renderProductListing({ query: 'available_for_sale:true', pageSize: 8 });
+  })();
+</script>
+
+  </body>
+</html>
