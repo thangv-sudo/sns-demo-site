@@ -261,66 +261,25 @@
         }
       }
       
-      // Rule 2: Check inventory threshold (5+ or -1 for digital)
-      // NOTE: On many shops, Storefront API returns quantityAvailable: null.
-      // In a demo-only (no backend) setup, the only safe way to enforce the rule is to FAIL CLOSED.
-      var variantEdges = product.variants?.edges || [];
-      var quantities = variantEdges.map(function(e) { return e && e.node && e.node.quantityAvailable; });
-
-      var maxQty = quantities.reduce(function(acc, q) {
-        if (q === null || q === undefined) {
-          return acc;
-        }
-        return Math.max(acc, q);
-      }, -Infinity);
-
-      if (maxQty === -Infinity) {
+      // Rule 2: Check if product is available for sale
+      // Respect Shopify's "Continue selling when out of stock" setting
+      // If product.availableForSale is true, Shopify allows purchases regardless of inventory
+      if (!product.availableForSale) {
         if (DEBUG_BUY_RULES) {
-          console.log('[buy-rules] hide (inventory unavailable from Storefront)', {
+          console.log('[buy-rules] hide (not available for sale)', {
             title: product.title,
             handle: product.handle,
-            scheduledPublishDate: scheduledPublishDate,
-            quantities: quantities,
-          });
-        }
-        return false;
-      }
-
-      // -1 indicates digital product
-      if (maxQty === -1) {
-        if (DEBUG_BUY_RULES) {
-          console.log('[buy-rules] show (digital product)', {
-            title: product.title,
-            handle: product.handle,
-            scheduledPublishDate: scheduledPublishDate,
-            maxQty: maxQty,
-            quantities: quantities,
-          });
-        }
-        return true;
-      }
-
-      // Threshold: quantityAvailable must be > 5 for physical products
-      if (maxQty <= 5) {
-        if (DEBUG_BUY_RULES) {
-          console.log('[buy-rules] hide (inventory below threshold)', {
-            title: product.title,
-            handle: product.handle,
-            scheduledPublishDate: scheduledPublishDate,
-            maxQty: maxQty,
-            quantities: quantities,
+            availableForSale: product.availableForSale,
           });
         }
         return false;
       }
 
       if (DEBUG_BUY_RULES) {
-        console.log('[buy-rules] show (inventory ok)', {
+        console.log('[buy-rules] show (available for sale)', {
           title: product.title,
           handle: product.handle,
-          scheduledPublishDate: scheduledPublishDate,
-          maxQty: maxQty,
-          quantities: quantities,
+          availableForSale: product.availableForSale,
         });
       }
       return true;
