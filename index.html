@@ -213,19 +213,33 @@
 
     /**
      * Fetch pre-order information for multiple products in bulk
+     * API Usage: GET /api/public/pre-order-bulk?productIds=123,456,789&shop=mystore.myshopify.com
+     * Response: { success: true, data: { "123": { isPreOrder: true, ... }, "456": { ... } } }
      */
     async function fetchPreOrderInfoBulk(productIds) {
       if (!productIds || productIds.length === 0) return {};
       
       try {
-        var url = snsAppUrl + '/api/public/pre-order-bulk';
+        // Extract simple IDs from GIDs (gid://shopify/Product/123 -> 123)
+        var simpleIds = productIds.map(function(id) {
+          var match = id.match(/\/Product\/(\d+)/);
+          return match ? match[1] : id;
+        });
+        
+        // Build query parameters
+        var params = new URLSearchParams({
+          productIds: simpleIds.join(','),
+          shop: domain
+        });
+        
+        var url = snsAppUrl + '/api/public/pre-order-bulk?' + params.toString();
+        console.log('[Pre-Order] Fetching bulk data for', simpleIds.length, 'products');
+        
         var response = await fetch(url, {
-          method: 'POST',
+          method: 'GET',
           headers: {
             'Content-Type': 'application/json',
-            'X-SNS-Token': snsAppToken,
           },
-          body: JSON.stringify({ productIds: productIds }),
         });
         
         if (!response.ok) {
@@ -233,15 +247,22 @@
           return {};
         }
         
-        var data = await response.json();
-        var preOrderMap = {};
+        var result = await response.json();
         
-        if (data.success && data.data) {
-          data.data.forEach(function(item) {
-            preOrderMap[item.productId] = item;
-          });
+        if (!result.success || !result.data) {
+          console.warn('[Pre-Order] Invalid response:', result);
+          return {};
         }
         
+        // API returns data as { "123": {...}, "456": {...} }
+        // Convert to use GID format as keys for matching
+        var preOrderMap = {};
+        for (var simpleId in result.data) {
+          var gid = 'gid://shopify/Product/' + simpleId;
+          preOrderMap[gid] = result.data[simpleId];
+        }
+        
+        console.log('[Pre-Order] Received data for', Object.keys(preOrderMap).length, 'products');
         return preOrderMap;
       } catch (error) {
         console.error('[Pre-Order] Error fetching bulk data:', error);
