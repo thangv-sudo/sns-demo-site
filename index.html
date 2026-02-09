@@ -336,124 +336,126 @@
         return false;
       }
 
-      // Rule 3: Check inventory quantity thresholds
-      // Calculate total available quantity across all variants
-      var totalQuantity = 0;
-      var hasDigitalProduct = false;
+      // Rule 3 & 4: Combined inventory and pre-order validation
+      // If product has pre-order settings, use pre-order rules for visibility
+      // Otherwise, use inventory quantity thresholds
+
+      console.log('preOrderInfo', preOrderInfo);
       
-      if (product.variants && product.variants.edges) {
-        for (var i = 0; i < product.variants.edges.length; i++) {
-          var variantNode = product.variants.edges[i].node;
-          var qty = variantNode.quantityAvailable;
-          
-          // Handle digital products (quantityAvailable = -1 or null)
-          if (qty === null || qty < 0) {
-            hasDigitalProduct = true;
-            break; // Digital product - treat as unlimited
+      if (preOrderInfo && preOrderInfo.isPreOrder) {
+        // PRE-ORDER PRODUCT: Apply pre-order visibility rules
+        var isVisible = preOrderInfo.isVisible !== false;
+        var enabled = preOrderInfo.enabled !== false;
+        var quantityRemaining = preOrderInfo.quantityRemaining;
+        
+        // Coming Soon state: pre-order exists but not visible yet
+        if (!isVisible) {
+          if (DEBUG_BUY_RULES) {
+            console.log('[buy-rules] hide (pre-order coming soon - not visible)', {
+              title: product.title,
+              handle: product.handle,
+              isPreOrder: true,
+              isVisible: isVisible,
+            });
           }
-          
-          totalQuantity += qty;
+          return false;
         }
-      }
-      
-      // If digital product, show button (treat as unlimited inventory)
-      if (hasDigitalProduct) {
+        
+        // Pre-order is disabled
+        if (!enabled) {
+          if (DEBUG_BUY_RULES) {
+            console.log('[buy-rules] hide (pre-order disabled)', {
+              title: product.title,
+              handle: product.handle,
+              isPreOrder: true,
+              enabled: enabled,
+            });
+          }
+          return false;
+        }
+        
+        // Sold out pre-order (quantity limit reached)
+        if (quantityRemaining !== null && quantityRemaining !== undefined && quantityRemaining <= 0) {
+          if (DEBUG_BUY_RULES) {
+            console.log('[buy-rules] hide (pre-order sold out)', {
+              title: product.title,
+              handle: product.handle,
+              isPreOrder: true,
+              quantityRemaining: quantityRemaining,
+            });
+          }
+          return false;
+        }
+        
+        // Active pre-order - show button (pre-order system manages its own quantity)
         if (DEBUG_BUY_RULES) {
-          console.log('[buy-rules] show (digital product - unlimited inventory)', {
+          console.log('[buy-rules] show (active pre-order)', {
             title: product.title,
             handle: product.handle,
+            isPreOrder: true,
+            isVisible: isVisible,
+            enabled: enabled,
+            quantityRemaining: quantityRemaining,
           });
         }
         return true;
-      }
-      
-      // Apply inventory thresholds:
-      // - Quantity = 0 → hide button
-      // - Quantity = 1-6 → hide button
-      // - Quantity >= 7 → show button
-      if (totalQuantity === 0 || (totalQuantity >= 1 && totalQuantity < 7)) {
-        if (DEBUG_BUY_RULES) {
-          console.log('[buy-rules] hide (insufficient inventory)', {
-            title: product.title,
-            handle: product.handle,
-            totalQuantity: totalQuantity,
-            threshold: 'requires >= 7 units',
-          });
-        }
-        return false;
-      }
-
-      // Rule 4: Pre-order validation
-      if (preOrderInfo) {
-        var isPreOrder = preOrderInfo.isPreOrder || false;
-        var isVisible = preOrderInfo.isVisible !== false; // default true if not specified
-        var enabled = preOrderInfo.enabled !== false; // default true if not specified
-        var quantityRemaining = preOrderInfo.quantityRemaining;
+      } else {
+        // REGULAR PRODUCT: Apply inventory quantity thresholds
+        var totalQuantity = 0;
+        var hasDigitalProduct = false;
         
-        if (isPreOrder) {
-          // Coming Soon state: pre-order exists but not visible yet
-          if (!isVisible) {
-            if (DEBUG_BUY_RULES) {
-              console.log('[buy-rules] hide (pre-order coming soon - not visible)', {
-                title: product.title,
-                handle: product.handle,
-                isPreOrder: isPreOrder,
-                isVisible: isVisible,
-              });
+        if (product.variants && product.variants.edges) {
+          for (var i = 0; i < product.variants.edges.length; i++) {
+            var variantNode = product.variants.edges[i].node;
+            var qty = variantNode.quantityAvailable;
+            
+            // Handle digital products (quantityAvailable = -1 or null)
+            if (qty === null || qty < 0) {
+              hasDigitalProduct = true;
+              break;
             }
-            return false;
+            
+            totalQuantity += qty;
           }
-          
-          // Pre-order is disabled
-          if (!enabled) {
-            if (DEBUG_BUY_RULES) {
-              console.log('[buy-rules] hide (pre-order disabled)', {
-                title: product.title,
-                handle: product.handle,
-                isPreOrder: isPreOrder,
-                enabled: enabled,
-              });
-            }
-            return false;
-          }
-          
-          // Sold out pre-order (quantity limit reached)
-          if (quantityRemaining !== null && quantityRemaining !== undefined && quantityRemaining <= 0) {
-            if (DEBUG_BUY_RULES) {
-              console.log('[buy-rules] hide (pre-order sold out)', {
-                title: product.title,
-                handle: product.handle,
-                isPreOrder: isPreOrder,
-                quantityRemaining: quantityRemaining,
-              });
-            }
-            return false;
-          }
-          
-          // Active pre-order - show button
+        }
+        
+        // If digital product, show button (treat as unlimited inventory)
+        if (hasDigitalProduct) {
           if (DEBUG_BUY_RULES) {
-            console.log('[buy-rules] show (active pre-order)', {
+            console.log('[buy-rules] show (digital product - unlimited inventory)', {
               title: product.title,
               handle: product.handle,
-              isPreOrder: isPreOrder,
-              isVisible: isVisible,
-              enabled: enabled,
-              quantityRemaining: quantityRemaining,
             });
           }
           return true;
         }
+        
+        // Apply inventory thresholds:
+        // - Quantity = 0 → hide button
+        // - Quantity = 1-6 → hide button
+        // - Quantity >= 7 → show button
+        if (totalQuantity === 0 || (totalQuantity >= 1 && totalQuantity < 7)) {
+          if (DEBUG_BUY_RULES) {
+            console.log('[buy-rules] hide (insufficient inventory)', {
+              title: product.title,
+              handle: product.handle,
+              totalQuantity: totalQuantity,
+              threshold: 'requires >= 7 units',
+            });
+          }
+          return false;
+        }
+        
+        if (DEBUG_BUY_RULES) {
+          console.log('[buy-rules] show (sufficient inventory)', {
+            title: product.title,
+            handle: product.handle,
+            totalQuantity: totalQuantity,
+            availableForSale: product.availableForSale,
+          });
+        }
+        return true;
       }
-
-      if (DEBUG_BUY_RULES) {
-        console.log('[buy-rules] show (sufficient inventory)', {
-          title: product.title,
-          handle: product.handle,
-          totalQuantity: totalQuantity,
-          availableForSale: product.availableForSale,
-        });
-      }
-      return true;
     }
 
     function createCard(parent, product) {
