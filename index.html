@@ -479,11 +479,12 @@
       }
       
       var titleText = product.title || 'Product';
-      if (isDigital) {
-        titleText += ' (Digital)';
-      } else {
-        titleText += ' (' + totalQuantity + ')';
-      }
+      // if (isDigital) {
+      //   titleText += ' (Digital)';
+      // } else {
+      //   titleText += ' (' + totalQuantity + ')';
+      // }
+      titleText += ' (' + totalQuantity + ')';
       
       var title = document.createElement('div'); title.className = 'pl-title'; title.textContent = titleText;
       var price = document.createElement('div'); price.className = 'pl-price'; price.textContent = priceText(product.priceRange);
