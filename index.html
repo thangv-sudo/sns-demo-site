@@ -211,6 +211,44 @@
 
     var DEBUG_BUY_RULES = true;
 
+    /**
+     * Fetch pre-order information for multiple products in bulk
+     */
+    async function fetchPreOrderInfoBulk(productIds) {
+      if (!productIds || productIds.length === 0) return {};
+      
+      try {
+        var url = snsAppUrl + '/api/public/pre-order-bulk';
+        var response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-SNS-Token': snsAppToken,
+          },
+          body: JSON.stringify({ productIds: productIds }),
+        });
+        
+        if (!response.ok) {
+          console.warn('[Pre-Order] Bulk fetch failed:', response.status);
+          return {};
+        }
+        
+        var data = await response.json();
+        var preOrderMap = {};
+        
+        if (data.success && data.data) {
+          data.data.forEach(function(item) {
+            preOrderMap[item.productId] = item;
+          });
+        }
+        
+        return preOrderMap;
+      } catch (error) {
+        console.error('[Pre-Order] Error fetching bulk data:', error);
+        return {};
+      }
+    }
+
     function fmtMoney(price) { if (!price) return ''; var a = Number(price.amount || 0).toFixed(2); return '$' + a; }
     function priceText(range) {
       if (!range) return ''; var min = range.minVariantPrice, max = range.maxVariantPrice;
@@ -223,8 +261,9 @@
      * 1. Onsale date (nogin.scheduled_publish_date) is today or prior in EST
      * 2. Product is available for sale
      * 3. Inventory thresholds: Show button if quantity >= 7 or digital product
+     * 4. Pre-order status: Validate visibility and quantity for pre-order products
      */
-    function isProductPurchasable(product) {
+    function isProductPurchasable(product, preOrderInfo) {
       // Rule 1: Check onsale date (EST)
       var scheduledPublishDate = product.metafield?.value;
       if (scheduledPublishDate) {
@@ -323,6 +362,68 @@
         return false;
       }
 
+      // Rule 4: Pre-order validation
+      if (preOrderInfo) {
+        var isPreOrder = preOrderInfo.isPreOrder || false;
+        var isVisible = preOrderInfo.isVisible !== false; // default true if not specified
+        var enabled = preOrderInfo.enabled !== false; // default true if not specified
+        var quantityRemaining = preOrderInfo.quantityRemaining;
+        
+        if (isPreOrder) {
+          // Coming Soon state: pre-order exists but not visible yet
+          if (!isVisible) {
+            if (DEBUG_BUY_RULES) {
+              console.log('[buy-rules] hide (pre-order coming soon - not visible)', {
+                title: product.title,
+                handle: product.handle,
+                isPreOrder: isPreOrder,
+                isVisible: isVisible,
+              });
+            }
+            return false;
+          }
+          
+          // Pre-order is disabled
+          if (!enabled) {
+            if (DEBUG_BUY_RULES) {
+              console.log('[buy-rules] hide (pre-order disabled)', {
+                title: product.title,
+                handle: product.handle,
+                isPreOrder: isPreOrder,
+                enabled: enabled,
+              });
+            }
+            return false;
+          }
+          
+          // Sold out pre-order (quantity limit reached)
+          if (quantityRemaining !== null && quantityRemaining !== undefined && quantityRemaining <= 0) {
+            if (DEBUG_BUY_RULES) {
+              console.log('[buy-rules] hide (pre-order sold out)', {
+                title: product.title,
+                handle: product.handle,
+                isPreOrder: isPreOrder,
+                quantityRemaining: quantityRemaining,
+              });
+            }
+            return false;
+          }
+          
+          // Active pre-order - show button
+          if (DEBUG_BUY_RULES) {
+            console.log('[buy-rules] show (active pre-order)', {
+              title: product.title,
+              handle: product.handle,
+              isPreOrder: isPreOrder,
+              isVisible: isVisible,
+              enabled: enabled,
+              quantityRemaining: quantityRemaining,
+            });
+          }
+          return true;
+        }
+      }
+
       if (DEBUG_BUY_RULES) {
         console.log('[buy-rules] show (sufficient inventory)', {
           title: product.title,
@@ -388,11 +489,18 @@
           var data = await fetchProductsPage({ query: query, pageSize: pageSize, after: after });
           hasNext = !!(data.pageInfo && data.pageInfo.hasNextPage); endCursor = data.pageInfo ? data.pageInfo.endCursor : null;
 
+          // Collect product IDs for bulk pre-order fetch
+          var productIds = data.edges.map(function(edge) { return edge.node.id; });
+          
+          // Fetch pre-order information for all products in this page
+          var preOrderMap = await fetchPreOrderInfoBulk(productIds);
+
           for (var i = 0; i < (data.edges || []).length; i++) {
             var p = data.edges[i].node; var mount = createCard(grid, p);
+            var preOrderInfo = preOrderMap[p.id] || null;
 
             // Apply buy button display rules
-            if (isProductPurchasable(p)) {
+            if (isProductPurchasable(p, preOrderInfo)) {
               ui.createComponent('product', { id: p.id.replace('gid://shopify/Product/',''), node: mount, moneyFormat: '%24%7B%7Bamount%7D%7D', options: buyButtonOptions() });
             }
             // If not purchasable, the card is shown but no buy button is rendered
