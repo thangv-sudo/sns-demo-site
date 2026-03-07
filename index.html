@@ -192,11 +192,10 @@
             query($q:String, $first:Int!, $after:String) {
               products(first: $first, query: $q, after: $after) {
                 edges { cursor node { 
-                  id title handle availableForSale 
-                  images(first:1){nodes{url altText width height}} 
+                  id title handle availableForSale
+                  images(first:1){nodes{url altText width height}}
                   priceRange { minVariantPrice{amount currencyCode} maxVariantPrice{amount currencyCode} }
-                  metafield(namespace: "nogin", key: "scheduled_publish_date") { value }
-                  variants(first: 50) { edges { node { id title availableForSale quantityAvailable } } }
+                  variants(first: 50) { edges { node { id title availableForSale } } }
                 } }
                 pageInfo { hasNextPage endCursor }
               }
@@ -209,63 +208,59 @@
       return json.data.products;
     }
 
-    var DEBUG_BUY_RULES = true;
-
     /**
-     * Fetch pre-order information for multiple products in bulk
-     * API Usage: GET /api/public/pre-order-bulk?productIds=123,456,789&shop=mystore.myshopify.com
-     * Response: { success: true, data: { "123": { isPreOrder: true, ... }, "456": { ... } } }
+     * Fetch purchasability status for multiple products in bulk.
+     * All business logic (inventory thresholds, pre-order rules, scheduled dates)
+     * is evaluated server-side. Only a boolean result is returned.
+     *
+     * API Usage: GET /api/public/product-purchasable?productIds=123,456,789&shop=mystore.myshopify.com
+     * Response: { success: true, data: { "123": { isPurchasable: true }, "456": { isPurchasable: false } } }
      */
-    async function fetchPreOrderInfoBulk(productIds) {
+    async function fetchPurchasability(productIds) {
       if (!productIds || productIds.length === 0) return {};
-      
+
       try {
-        // Extract simple IDs from GIDs (gid://shopify/Product/123 -> 123)
         var simpleIds = productIds.map(function(id) {
           var match = id.match(/\/Product\/(\d+)/);
           return match ? match[1] : id;
         });
-        
-        // Build query parameters
+
         var params = new URLSearchParams({
           productIds: simpleIds.join(','),
           shop: domain
         });
-        
-        var url = snsAppUrl + '/api/public/pre-order-bulk?' + params.toString();
-        console.log('[Pre-Order] Fetching bulk data for', simpleIds.length, 'products');
-        
+
+        var url = snsAppUrl + '/api/public/product-purchasable?' + params.toString();
+        console.log('[Purchasable] Fetching status for', simpleIds.length, 'products');
+
         var response = await fetch(url, {
           method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
         });
-        
+
         if (!response.ok) {
-          console.warn('[Pre-Order] Bulk fetch failed:', response.status);
+          console.warn('[Purchasable] Fetch failed:', response.status);
           return {};
         }
-        
+
         var result = await response.json();
-        
+
         if (!result.success || !result.data) {
-          console.warn('[Pre-Order] Invalid response:', result);
+          console.warn('[Purchasable] Invalid response:', result);
           return {};
         }
-        
-        // API returns data as { "123": {...}, "456": {...} }
-        // Convert to use GID format as keys for matching
-        var preOrderMap = {};
+
+        // Convert simple IDs to GID keys for matching
+        var purchasableMap = {};
         for (var simpleId in result.data) {
           var gid = 'gid://shopify/Product/' + simpleId;
-          preOrderMap[gid] = result.data[simpleId];
+          purchasableMap[gid] = result.data[simpleId];
         }
-        
-        console.log('[Pre-Order] Received data for', Object.keys(preOrderMap).length, 'products');
-        return preOrderMap;
+
+        console.log('[Purchasable] Received status for', Object.keys(purchasableMap).length, 'products');
+        return purchasableMap;
       } catch (error) {
-        console.error('[Pre-Order] Error fetching bulk data:', error);
+        console.error('[Purchasable] Error fetching status:', error);
         return {};
       }
     }
@@ -277,214 +272,13 @@
       return fmtMoney(min) + ' - ' + fmtMoney(max);
     }
 
-    /**
-     * Check if product is purchasable based on buy button display rules:
-     * 1. Onsale date (nogin.scheduled_publish_date) is today or prior in EST
-     * 2. Product is available for sale
-     * 3. Inventory thresholds: Show button if quantity >= 7 or digital product
-     * 4. Pre-order status: Validate visibility and quantity for pre-order products
-     */
-    function isProductPurchasable(product, preOrderInfo) {
-      // Rule 1: Check onsale date (EST)
-      var scheduledPublishDate = product.metafield?.value;
-      if (scheduledPublishDate) {
-        var publishDate = new Date(scheduledPublishDate);
-        // Get current date in EST (America/New_York)
-        var now = new Date();
-        var estFormatter = new Intl.DateTimeFormat('en-US', {
-          timeZone: 'America/New_York',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit'
-        });
-        var estParts = estFormatter.formatToParts(now);
-        var estYear = parseInt(estParts.find(p => p.type === 'year').value, 10);
-        var estMonth = parseInt(estParts.find(p => p.type === 'month').value, 10) - 1;
-        var estDay = parseInt(estParts.find(p => p.type === 'day').value, 10);
-        var todayEST = new Date(estYear, estMonth, estDay);
-        
-        // Compare dates (ignoring time)
-        var publishDateOnly = new Date(
-          publishDate.getFullYear(),
-          publishDate.getMonth(),
-          publishDate.getDate()
-        );
-        
-        if (publishDateOnly > todayEST) {
-          if (DEBUG_BUY_RULES) {
-            console.log('[buy-rules] hide (scheduled date in future)', {
-              title: product.title,
-              handle: product.handle,
-              scheduledPublishDate: scheduledPublishDate,
-            });
-          }
-          return false; // Not yet on sale
-        }
-      }
-      
-      // Rule 2: Check if product is available for sale
-      // Respect Shopify's "Continue selling when out of stock" setting
-      // If product.availableForSale is true, Shopify allows purchases regardless of inventory
-      if (!product.availableForSale) {
-        if (DEBUG_BUY_RULES) {
-          console.log('[buy-rules] hide (not available for sale)', {
-            title: product.title,
-            handle: product.handle,
-            availableForSale: product.availableForSale,
-          });
-        }
-        return false;
-      }
-
-      // Rule 3 & 4: Combined inventory and pre-order validation
-      // If product has pre-order settings, use pre-order rules for visibility
-      // Otherwise, use inventory quantity thresholds
-
-      console.log('preOrderInfo', preOrderInfo);
-      
-      if (preOrderInfo && preOrderInfo.isPreOrder) {
-        // PRE-ORDER PRODUCT: Apply pre-order visibility rules
-        var isVisible = preOrderInfo.isVisible !== false;
-        var enabled = preOrderInfo.enabled !== false;
-        var quantityRemaining = preOrderInfo.quantityRemaining;
-        
-        // Coming Soon state: pre-order exists but not visible yet
-        if (!isVisible) {
-          if (DEBUG_BUY_RULES) {
-            console.log('[buy-rules] hide (pre-order coming soon - not visible)', {
-              title: product.title,
-              handle: product.handle,
-              isPreOrder: true,
-              isVisible: isVisible,
-            });
-          }
-          return false;
-        }
-        
-        // Pre-order is disabled
-        if (!enabled) {
-          if (DEBUG_BUY_RULES) {
-            console.log('[buy-rules] hide (pre-order disabled)', {
-              title: product.title,
-              handle: product.handle,
-              isPreOrder: true,
-              enabled: enabled,
-            });
-          }
-          return false;
-        }
-        
-        // Sold out pre-order (quantity limit reached)
-        if (quantityRemaining !== null && quantityRemaining !== undefined && quantityRemaining <= 0) {
-          if (DEBUG_BUY_RULES) {
-            console.log('[buy-rules] hide (pre-order sold out)', {
-              title: product.title,
-              handle: product.handle,
-              isPreOrder: true,
-              quantityRemaining: quantityRemaining,
-            });
-          }
-          return false;
-        }
-        
-        // Active pre-order - show button (pre-order system manages its own quantity)
-        if (DEBUG_BUY_RULES) {
-          console.log('[buy-rules] show (active pre-order)', {
-            title: product.title,
-            handle: product.handle,
-            isPreOrder: true,
-            isVisible: isVisible,
-            enabled: enabled,
-            quantityRemaining: quantityRemaining,
-          });
-        }
-        return true;
-      } else {
-        // REGULAR PRODUCT: Apply inventory quantity thresholds
-        var totalQuantity = 0;
-        var hasDigitalProduct = false;
-        
-        if (product.variants && product.variants.edges) {
-          for (var i = 0; i < product.variants.edges.length; i++) {
-            var variantNode = product.variants.edges[i].node;
-            var qty = variantNode.quantityAvailable;
-            
-            // Handle digital products (quantityAvailable = -1 or null)
-            if (qty === null || qty < 0) {
-              hasDigitalProduct = true;
-              break;
-            }
-            
-            totalQuantity += qty;
-          }
-        }
-        
-        // If digital product, show button (treat as unlimited inventory)
-        if (hasDigitalProduct) {
-          if (DEBUG_BUY_RULES) {
-            console.log('[buy-rules] show (digital product - unlimited inventory)', {
-              title: product.title,
-              handle: product.handle,
-            });
-          }
-          return true;
-        }
-        
-        // Apply inventory thresholds:
-        // - Quantity = 0 → hide button
-        // - Quantity = 1-6 → hide button
-        // - Quantity >= 7 → show button
-        if (totalQuantity === 0 || (totalQuantity >= 1 && totalQuantity < 7)) {
-          if (DEBUG_BUY_RULES) {
-            console.log('[buy-rules] hide (insufficient inventory)', {
-              title: product.title,
-              handle: product.handle,
-              totalQuantity: totalQuantity,
-              threshold: 'requires >= 7 units',
-            });
-          }
-          return false;
-        }
-        
-        if (DEBUG_BUY_RULES) {
-          console.log('[buy-rules] show (sufficient inventory)', {
-            title: product.title,
-            handle: product.handle,
-            totalQuantity: totalQuantity,
-            availableForSale: product.availableForSale,
-          });
-        }
-        return true;
-      }
-    }
-
     function createCard(parent, product) {
       var card = document.createElement('div'); card.className = 'pl-card';
       if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) card.classList.add('dark');
       var imgUrl = product.images?.nodes?.[0]?.url || ''; var imgAlt = product.images?.nodes?.[0]?.altText || product.title || '';
       var img = document.createElement('img'); img.className = 'pl-img'; img.alt = imgAlt; if (imgUrl) img.src = imgUrl;
-      
-      // Calculate total quantity for display
-      var totalQuantity = 0;
-      var isDigital = false;
-      if (product.variants && product.variants.edges) {
-        for (var i = 0; i < product.variants.edges.length; i++) {
-          var qty = product.variants.edges[i].node.quantityAvailable;
-          if (qty === null || qty < 0) {
-            isDigital = true;
-            break;
-          }
-          totalQuantity += qty;
-        }
-      }
-      
+
       var titleText = product.title || 'Product';
-      // if (isDigital) {
-      //   titleText += ' (Digital)';
-      // } else {
-      //   titleText += ' (' + totalQuantity + ')';
-      // }
-      titleText += ' (' + totalQuantity + ')';
       
       var title = document.createElement('div'); title.className = 'pl-title'; title.textContent = titleText;
       var price = document.createElement('div'); price.className = 'pl-price'; price.textContent = priceText(product.priceRange);
@@ -513,18 +307,18 @@
           var data = await fetchProductsPage({ query: query, pageSize: pageSize, after: after });
           hasNext = !!(data.pageInfo && data.pageInfo.hasNextPage); endCursor = data.pageInfo ? data.pageInfo.endCursor : null;
 
-          // Collect product IDs for bulk pre-order fetch
+          // Collect product IDs for bulk purchasability check
           var productIds = data.edges.map(function(edge) { return edge.node.id; });
-          
-          // Fetch pre-order information for all products in this page
-          var preOrderMap = await fetchPreOrderInfoBulk(productIds);
+
+          // Fetch purchasability status from server (all business logic is server-side)
+          var purchasableMap = await fetchPurchasability(productIds);
 
           for (var i = 0; i < (data.edges || []).length; i++) {
             var p = data.edges[i].node; var mount = createCard(grid, p);
-            var preOrderInfo = preOrderMap[p.id] || null;
+            var status = purchasableMap[p.id];
 
-            // Apply buy button display rules
-            if (isProductPurchasable(p, preOrderInfo)) {
+            // Show buy button only if server says product is purchasable
+            if (status && status.isPurchasable) {
               ui.createComponent('product', { id: p.id.replace('gid://shopify/Product/',''), node: mount, moneyFormat: '%24%7B%7Bamount%7D%7D', options: buyButtonOptions() });
             }
             // If not purchasable, the card is shown but no buy button is rendered
