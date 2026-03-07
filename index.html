@@ -227,19 +227,14 @@
 
         var params = new URLSearchParams({
           productIds: simpleIds.join(','),
-          shop: domain
+          shop: domain,
+          storefrontToken: token
         });
 
         var url = snsAppUrl + '/api/public/product-purchasable?' + params.toString();
         console.log('[Purchasable] Fetching status for', simpleIds.length, 'products');
 
-        var response = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Storefront-Access-Token': token,
-          },
-        });
+        var response = await fetch(url);
 
         if (!response.ok) {
           console.warn('[Purchasable] Fetch failed:', response.status);
