@@ -1,0 +1,241 @@
+
+<script>
+(function () {
+  const storeDomain = 'simon-and-schuster-dev.myshopify.com';
+  const storefrontToken = 'fa60e6d76fe042b8221f01d34419a020';
+  const buttonSelector = '.shopify-button';
+  const addToCartText = 'Buy From Us';
+  const cartDisclaimer = 'Taxes and shipping calculated at checkout.';
+
+  const urlParams = new URLSearchParams(window.location.search);
+  var triggerAddToCart = false;
+  if (urlParams.has('addToCart') && urlParams.get('addToCart') === 'true') {
+    triggerAddToCart = true;
+  }
+
+  /**
+   * Check if product is purchasable based on buy button display rules:
+   * 1. Onsale date (nogin.scheduled_publish_date) is today or prior in EST
+   * 2. Inventory 5+ for physical product (or digital product with inventory -1 or not tracked)
+   */
+  function isProductPurchasable(product) {
+    // Rule 1: Check onsale date (EST)
+    var scheduledPublishDate = product.metafield?.value;
+    if (scheduledPublishDate) {
+      var publishDate = new Date(scheduledPublishDate);
+      // Get current date in EST (America/New_York)
+      var now = new Date();
+      var estFormatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+      var estParts = estFormatter.formatToParts(now);
+      var estYear = parseInt(estParts.find(p => p.type === 'year').value, 10);
+      var estMonth = parseInt(estParts.find(p => p.type === 'month').value, 10) - 1;
+      var estDay = parseInt(estParts.find(p => p.type === 'day').value, 10);
+      var todayEST = new Date(estYear, estMonth, estDay);
+      
+      // Compare dates (ignoring time)
+      var publishDateOnly = new Date(
+        publishDate.getFullYear(),
+        publishDate.getMonth(),
+        publishDate.getDate()
+      );
+      
+      if (publishDateOnly > todayEST) {
+        return false; // Not yet on sale
+      }
+    }
+    
+    // Rule 2: Check inventory across all variants
+    var variants = product.variants?.nodes || [];
+    if (variants.length === 0) return false;
+
+    for (var i = 0; i < variants.length; i++) {
+      var variant = variants[i];
+      var qty = variant.quantityAvailable;
+      var isDigital = !variant.requiresShipping;
+      
+      // Digital product (requiresShipping = false) with inventory -1 or not tracked
+      if (isDigital) {
+        return true;
+      }
+      
+      // Physical product (requiresShipping = true) with inventory 5+
+      if (!isDigital && qty >= 5) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  var scriptURL = 'https://sdks.shopifycdn.com/buy-button/latest/buy-button-storefront.min.js';
+  if (window.ShopifyBuy) {
+    if (window.ShopifyBuy.UI) {
+      ShopifyBuyInit();
+    } else {
+      loadScript();
+    }
+  } else {
+    loadScript();
+  }
+  function loadScript() {
+    var script = document.createElement('script');
+    script.async = true;
+    script.src = scriptURL;
+    (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(script);
+    script.onload = ShopifyBuyInit;
+  }
+  function ShopifyBuyInit() {
+    window.ShopifyBuy.client = ShopifyBuy.buildClient({
+      domain: storeDomain,
+      storefrontAccessToken: storefrontToken,
+    });
+    ShopifyBuy.UI.onReady(window.ShopifyBuy.client).then(function (ui) {
+      ui.createComponent('cart', {
+        moneyFormat: '%24%7B%7Bamount%7D%7D',
+        options: {
+          "cart": {
+            "styles": {
+              "button": {
+                ":hover": {
+                  "background-color": "#000000"
+                },
+                "background-color": "#000000",
+                ":focus": {
+                  "background-color": "#000000"
+                }
+              }
+            },
+            "text": {
+              "total": "Subtotal",
+              "notice": cartDisclaimer
+            },
+            "popup": false
+          },
+          "toggle": {
+            "styles": {
+              "toggle": {
+                "background-color": "#000000",
+                ":hover": {
+                  "background-color": "#000000"
+                },
+                ":focus": {
+                  "background-color": "#000000"
+                }
+              }
+            }
+          }
+        }
+      });
+    });
+    ShopifyBuyInitProducts();
+  }
+  function ShopifyBuyInitProducts() {
+    if (window.ShopifyBuy.UI) {
+      ShopifyBuy.UI.onReady(window.ShopifyBuy.client).then(function (ui) {
+        document.querySelectorAll(buttonSelector).forEach((element) => {
+          if (!element.dataset.initialized) {
+            fetch('https://' + storeDomain + '/api/2025-10/graphql.json', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Shopify-Storefront-Access-Token': storefrontToken
+              },
+              body: JSON.stringify({
+                query: `
+                  query($handle: String!) {
+                    product(handle: $handle) {
+                      id
+                      title
+                      handle
+                      metafield(namespace: "nogin", key: "scheduled_publish_date") {
+                        value
+                      }
+                      variants(first: 10) {
+                        nodes {
+                          id
+                          quantityAvailable
+                          requiresShipping
+                        }
+                      }
+                    }
+                  }`,
+                variables: { handle: element.dataset.isbn }
+              })
+            })
+              .then(r => r.json()).then(({ data, errors }) => {
+                if (data && data.product) {
+                  const product = data.product;
+                  // Check if product is purchasable based on buy button rules
+                  if (!isProductPurchasable(product)) {
+                    element.dataset.initialized = true;
+                    element.style.display = 'none';
+                    return;
+                  }
+                  
+                  const productId = product.id.replace("gid://shopify/Product/", "");
+
+                  ui.createComponent('product', {
+                    id: productId,
+                    node: element,
+                    options: {
+                      "product": {
+                        "iframe": false,
+                        "events": {
+                          "afterInit": function (component) {
+                            if (triggerAddToCart) {
+                              var atcButton = element.querySelector('button');
+                              if (atcButton) {
+                                triggerAddToCart = false;
+                                atcButton.click();
+                              }
+                            }
+                          },
+                        },
+                        "styles": {
+                          "product": {
+                            "@media (min-width: 601px)": {
+                              "max-width": "calc(25% - 20px)",
+                              "margin-left": "20px",
+                              "margin-bottom": "50px"
+                            },
+                            "text-align": "left"
+                          },
+                          "button": {
+                            ":hover": {
+                              "background-color": "#000000"
+                            },
+                            "background-color": "#000000",
+                            ":focus": {
+                              "background-color": "#000000"
+                            },
+                            "padding-left": "18px",
+                            "padding-right": "18px"
+                          }
+                        },
+                        "contents": {
+                          "img": false,
+                          "title": false,
+                          "price": false
+                        },
+                        "text": {
+                          "button": addToCartText
+                        }
+                      },
+                    }
+                  });
+                  element.dataset.initialized = true;
+                }
+              });
+          }
+        });
+      });
+    }
+  }
+  window.ShopifyBuyInitProducts = ShopifyBuyInitProducts;
+})();
+</script>
+
