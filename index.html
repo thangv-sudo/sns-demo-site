@@ -145,12 +145,40 @@
             },
             popup: false,
             events: {
-                afterInit: (cart) => {
-                    cart.onCheckout = () => {
-                        const checkoutUrl = cart.model.webUrl;
-                        cart.checkout.open(checkoutUrl);
+                afterInit: function(cart) {
+                    cart.onCheckout = function() {
+                        cart._userEvent('openCheckout');
+                        cart.props.tracker.track('Open cart checkout', {});
+                        
+                        var currentUrl = window.location.href;
+                        var cartId = cart.model.id;
+                        
+                        console.log('[Demo] Setting shopping_url cart attribute:', currentUrl);
+                        console.log('[Demo] Cart ID:', cartId);
+                        
+                        // Call Storefront API to set cart attribute before checkout
+                        fetch(apiUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-Shopify-Storefront-Access-Token': token
+                            },
+                            body: JSON.stringify({
+                                query: 'mutation cartAttributesUpdate($cartId: ID!, $attributes: [AttributeInput!]!) { cartAttributesUpdate(cartId: $cartId, attributes: $attributes) { cart { id } userErrors { field message } } }',
+                                variables: {
+                                    cartId: cartId,
+                                    attributes: [{ key: 'shopping_url', value: currentUrl }]
+                                }
+                            })
+                        }).then(function(resp) { return resp.json(); }).then(function(data) {
+                            console.log('[Demo] Cart attribute set:', data);
+                            cart.checkout.open(cart.model.webUrl);
+                        }).catch(function(err) {
+                            console.error('[Demo] Failed to set attribute, opening checkout anyway:', err);
+                            cart.checkout.open(cart.model.webUrl);
+                        });
                     };
-                },
+                }
             }
         },
 
