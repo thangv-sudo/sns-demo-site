@@ -46,6 +46,9 @@
 
 
 
+<!-- BXGY Promo Banner -->
+<div id="bxgy-banner" style="max-width:1100px;margin:16px auto 0;"></div>
+
 <!-- Product list container -->
 <div id="product-list" style="max-width:1100px;margin:24px auto;"></div>
 
@@ -93,11 +96,315 @@
     .pl-actions{display:flex;justify-content:center;margin-top:16px}
     .pl-btn{padding:10px 16px;border-radius:8px;border:1px solid #ddd;cursor:pointer;background:#fff}
     .pl-btn.dark{background:#fff;color:inherit;border-color:#ddd}
+    .bxgy-promo{padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;margin-bottom:8px;transition:background .3s,color .3s}
+    .bxgy-promo.qualified{background:#ecfdf5;color:#065f46}
+    .bxgy-promo.not-qualified{background:#fef3c7;color:#92400e}
+    .bxgy-promo .bxgy-tag{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:4px;margin-right:8px}
+    .bxgy-promo.qualified .bxgy-tag{background:#d1fae5;color:#047857}
+    .bxgy-promo.not-qualified .bxgy-tag{background:#fde68a;color:#92400e}
     `;
     var style = document.createElement('style'); style.innerText = css;
     (document.head || document.body).appendChild(style);
 
-    function buyButtonOptions() {
+    // ============================================================
+    // BUY X GET Y — Demo Configuration
+    // Edit the rules below to match your store's products.
+    //   buyProductIds : array of numeric Shopify Product IDs that trigger the promo
+    //   buyQuantity   : how many the customer must buy to qualify
+    //   giftVariantId : numeric Shopify Variant ID of the free gift
+    //   giftQuantity  : how many free items to add per qualification
+    //   maxPerOrder   : cap on how many times the promo can fire per cart
+    //   label         : short label shown when promo is active
+    //   bannerText    : text shown when customer hasn't yet qualified
+    //   compareAtPrice: original price of the gift (for strike-through display)
+    // ============================================================
+    var bxgyRules = [
+      {
+        id: 'demo-bxgy-1',
+        buyProductIds: ['8201532801249'],           // The Complete Short Stories Of Thomas Wolfe
+        buyQuantity: 2,
+        giftVariantId: '44360087404769',            // Haircut and Other Stories (Paperback)
+        giftQuantity: 1,
+        maxPerOrder: 1,
+        label: 'Free Gift',
+        bannerText: 'Buy 2 "The Complete Short Stories Of Thomas Wolfe", get "Haircut and Other Stories" FREE!',
+        compareAtPrice: 14.95
+      }
+      // Add more rules here…
+    ];
+
+    // ============================================================
+    // BXGY Engine — uses direct Storefront API GraphQL calls
+    // ============================================================
+    var _bxgyEngine = null;
+    var _bxgyDebounceTimer = null;
+
+    function BXGYEngine(cart, rules) {
+      this.cart = cart;
+      this.rules = rules;
+      this.giftVids = new Set(rules.map(function(r){ return String(r.giftVariantId); }));
+      this.busy = false;
+      this._lastGiftState = {};
+      _bxgyEngine = this;
+      var self = this;
+      setTimeout(function(){ self.reconcile(); }, 1000);
+    }
+
+    // --- Direct Storefront API helpers ---
+
+    BXGYEngine.prototype._gql = async function(query, variables) {
+      var resp = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+        body: JSON.stringify({ query: query, variables: variables })
+      });
+      return resp.json();
+    };
+
+    BXGYEngine.prototype._getCartId = function() {
+      return this.cart.model && this.cart.model.id;
+    };
+
+    BXGYEngine.prototype._fetchCartLines = async function() {
+      var cartId = this._getCartId();
+      if (!cartId) { console.log('[BXGY] No cart ID'); return []; }
+
+      var json = await this._gql(
+        'query($id:ID!){cart(id:$id){lines(first:50){edges{node{id quantity merchandise{...on ProductVariant{id product{id}}}}}}}}',
+        { id: cartId }
+      );
+
+      if (!json.data || !json.data.cart || !json.data.cart.lines) {
+        console.warn('[BXGY] Could not read cart lines:', json);
+        return [];
+      }
+
+      return json.data.cart.lines.edges.map(function(e) {
+        var n = e.node;
+        return {
+          lineId: n.id,
+          quantity: n.quantity,
+          variantId: n.merchandise.id.replace('gid://shopify/ProductVariant/', ''),
+          variantGid: n.merchandise.id,
+          productId: n.merchandise.product.id.replace('gid://shopify/Product/', ''),
+          productGid: n.merchandise.product.id
+        };
+      });
+    };
+
+    BXGYEngine.prototype._addLine = async function(variantGid, qty) {
+      var cartId = this._getCartId();
+      console.log('[BXGY] API → cartLinesAdd', variantGid, 'qty', qty);
+      var json = await this._gql(
+        'mutation($cartId:ID!,$lines:[CartLineInput!]!){cartLinesAdd(cartId:$cartId,lines:$lines){cart{id}userErrors{field message}}}',
+        { cartId: cartId, lines: [{ merchandiseId: variantGid, quantity: qty, attributes: [{ key: '_bxgy_gift', value: 'true' }] }] }
+      );
+      if (json.errors || (json.data && json.data.cartLinesAdd && json.data.cartLinesAdd.userErrors.length)) {
+        console.error('[BXGY] addLine error:', json);
+      }
+      return json;
+    };
+
+    BXGYEngine.prototype._updateLine = async function(lineId, qty) {
+      var cartId = this._getCartId();
+      console.log('[BXGY] API → cartLinesUpdate', lineId, 'qty', qty);
+      var json = await this._gql(
+        'mutation($cartId:ID!,$lines:[CartLineUpdateInput!]!){cartLinesUpdate(cartId:$cartId,lines:$lines){cart{id}userErrors{field message}}}',
+        { cartId: cartId, lines: [{ id: lineId, quantity: qty }] }
+      );
+      if (json.errors) console.error('[BXGY] updateLine error:', json);
+      return json;
+    };
+
+    BXGYEngine.prototype._removeLine = async function(lineId) {
+      var cartId = this._getCartId();
+      console.log('[BXGY] API → cartLinesRemove', lineId);
+      var json = await this._gql(
+        'mutation($cartId:ID!,$lineIds:[ID!]!){cartLinesRemove(cartId:$cartId,lineIds:$lineIds){cart{id}userErrors{field message}}}',
+        { cartId: cartId, lineIds: [lineId] }
+      );
+      if (json.errors) console.error('[BXGY] removeLine error:', json);
+      return json;
+    };
+
+    // Force Buy Button SDK to re-fetch cart and re-render
+    BXGYEngine.prototype._refreshSDK = async function() {
+      try {
+        var cartId = this._getCartId();
+        var client = this.cart.props && this.cart.props.client;
+
+        if (client) {
+          // Try new Cart API fetch
+          if (client.cart && client.cart.fetch) {
+            this.cart.model = await client.cart.fetch(cartId);
+          }
+          // Try legacy Checkout API fetch
+          else if (client.checkout && client.checkout.fetch) {
+            this.cart.model = await client.checkout.fetch(cartId);
+          }
+        }
+
+        // Re-render the cart UI
+        if (this.cart.render) this.cart.render();
+        console.log('[BXGY] SDK cart refreshed');
+      } catch(e) {
+        console.warn('[BXGY] SDK refresh failed:', e);
+        // Fallback: toggle cart to force full re-render
+        try {
+          if (this.cart.close) this.cart.close();
+          var c = this.cart;
+          setTimeout(function(){ if (c.open) c.open(); }, 200);
+        } catch(e2) { /* ignore */ }
+      }
+    };
+
+    // --- Core reconciliation ---
+
+    BXGYEngine.prototype.reconcile = async function() {
+      if (this.busy) return;
+      this.busy = true;
+
+      try {
+        var cartId = this._getCartId();
+        if (!cartId) { console.log('[BXGY] No cart yet'); return; }
+
+        // Fetch live cart lines from Storefront API (always fresh)
+        var items = await this._fetchCartLines();
+        console.log('[BXGY] Reconcile — lines:', JSON.stringify(items));
+
+        // Count qualifying quantities (exclude gifts)
+        var qty = {};
+        var self = this;
+        items.forEach(function(li) {
+          if (self.giftVids.has(li.variantId)) return;
+          qty[li.productId] = (qty[li.productId] || 0) + li.quantity;
+        });
+        console.log('[BXGY] Qualifying qty:', JSON.stringify(qty));
+
+        var cartChanged = false;
+
+        for (var ri = 0; ri < this.rules.length; ri++) {
+          var rule = this.rules[ri];
+
+          var n = Infinity;
+          for (var pi = 0; pi < rule.buyProductIds.length; pi++) {
+            n = Math.min(n, Math.floor((qty[rule.buyProductIds[pi]] || 0) / rule.buyQuantity));
+          }
+          if (n === Infinity) n = 0;
+          if (rule.maxPerOrder) n = Math.min(n, rule.maxPerOrder);
+
+          var want = n * rule.giftQuantity;
+          var giftVid = String(rule.giftVariantId);
+          var gift = items.find(function(li){ return li.variantId === giftVid; });
+          var have = gift ? gift.quantity : 0;
+
+          // Detect manual removal
+          var wasPresent = this._lastGiftState[rule.id];
+          if (want > 0 && !gift && wasPresent) {
+            console.log('[BXGY] Gift manually removed, skipping re-add');
+            this._lastGiftState[rule.id] = false;
+            continue;
+          }
+          this._lastGiftState[rule.id] = have > 0;
+
+          if (want === have) continue;
+
+          console.log('[BXGY] Rule "' + rule.id + '": want=' + want + ' have=' + have);
+
+          if (want > 0 && !gift) {
+            await this._addLine('gid://shopify/ProductVariant/' + rule.giftVariantId, want);
+            this._lastGiftState[rule.id] = true;
+            cartChanged = true;
+          } else if (want > 0 && gift) {
+            await this._updateLine(gift.lineId, want);
+            cartChanged = true;
+          } else if (want === 0 && gift) {
+            console.log('[BXGY] Removing gift — trigger no longer met');
+            await this._removeLine(gift.lineId);
+            this._lastGiftState[rule.id] = false;
+            cartChanged = true;
+          }
+        }
+
+        // Refresh SDK so UI reflects changes
+        if (cartChanged) {
+          await this._refreshSDK();
+        }
+
+        this._emitStatus(qty);
+      } finally {
+        this.busy = false;
+      }
+    };
+
+    BXGYEngine.prototype._emitStatus = function(qty) {
+      var detail = this.rules.map(function(r) {
+        var min = Infinity;
+        for (var i = 0; i < r.buyProductIds.length; i++) {
+          min = Math.min(min, qty[r.buyProductIds[i]] || 0);
+        }
+        if (min === Infinity) min = 0;
+        var remaining = Math.max(0, r.buyQuantity - min);
+        return {
+          id: r.id,
+          label: r.label,
+          bannerText: r.bannerText,
+          qualified: remaining === 0,
+          remaining: remaining,
+          compareAtPrice: r.compareAtPrice
+        };
+      });
+
+      renderBXGYBanner(detail);
+      window.dispatchEvent(new CustomEvent('bxgy:status', { detail: detail }));
+    };
+
+    // ============================================================
+    // BXGY Promo Banner Renderer
+    // ============================================================
+    function renderBXGYBanner(promos) {
+      var container = document.getElementById('bxgy-banner');
+      if (!container) return;
+      container.innerHTML = '';
+
+      promos.forEach(function(p) {
+        var div = document.createElement('div');
+        div.className = 'bxgy-promo ' + (p.qualified ? 'qualified' : 'not-qualified');
+
+        var tag = document.createElement('span');
+        tag.className = 'bxgy-tag';
+        tag.textContent = p.label;
+
+        var msg = document.createElement('span');
+        if (p.qualified) {
+          msg.textContent = p.label + ' added to your cart!';
+        } else {
+          msg.textContent = 'Add ' + p.remaining + ' more to get: ' + p.bannerText;
+        }
+
+        div.appendChild(tag);
+        div.appendChild(msg);
+        container.appendChild(div);
+      });
+    }
+
+    // Show initial banner state (before any cart interaction)
+    (function() {
+      var initial = bxgyRules.map(function(r) {
+        return {
+          id: r.id,
+          label: r.label,
+          bannerText: r.bannerText,
+          qualified: false,
+          remaining: r.buyQuantity,
+          compareAtPrice: r.compareAtPrice
+        };
+      });
+      renderBXGYBanner(initial);
+    })();
+
+    function buyButtonOptions(opts) {
+      var buttonText = (opts && opts.isPreOrder) ? 'Pre Order' : 'Buy From Us';
       return {
         product: {
           styles: {
@@ -115,7 +422,7 @@
             }
           },
           contents: { img: false, title: false, price: false },
-          text: { button: 'Buy From Us' }
+          text: { button: buttonText }
         },
         productSet: { styles: { products: { '@media (min-width: 601px)': { 'margin-left': '-20px' } } } },
         modalProduct: {
@@ -146,7 +453,21 @@
             },
             popup: false,
             events: {
+                afterRender: function(cart) {
+                    // Debounce: wait 800ms so the cart model is fully updated
+                    if (_bxgyDebounceTimer) clearTimeout(_bxgyDebounceTimer);
+                    _bxgyDebounceTimer = setTimeout(function() {
+                      if (_bxgyEngine && !_bxgyEngine.busy) {
+                        _bxgyEngine.reconcile();
+                      }
+                    }, 800);
+                },
                 afterInit: function(cart) {
+                    if (bxgyRules.length) {
+                      console.log('[BXGY] Init — cart ID:', cart.model && cart.model.id);
+                      new BXGYEngine(cart, bxgyRules);
+                    }
+
                     cart.onCheckout = function() {
                         cart._userEvent('openCheckout');
                         cart.props.tracker.track('Open cart checkout', {});
@@ -238,57 +559,46 @@
     }
 
     /**
-     * Fetch purchasability status for multiple products in bulk.
+     * Fetch purchasability status for a single product.
      * All business logic (inventory thresholds, pre-order rules, scheduled dates)
-     * is evaluated server-side. Only a boolean result is returned.
+     * is evaluated server-side.
      *
-     * API Usage: GET /api/public/product-purchasable?productIds=123,456,789&shop=mystore.myshopify.com
-     * Response: { success: true, data: { "123": { isPurchasable: true }, "456": { isPurchasable: false } } }
+     * API Usage: GET /api/public/product-purchasable?productIds=123&shop=mystore.myshopify.com
+     * Response: { success: true, data: { "123": { isPurchasable: true, isPreOrder: false } } }
      */
-    async function fetchPurchasability(productIds) {
-      if (!productIds || productIds.length === 0) return {};
-
+    async function fetchPurchasabilityForProduct(productGid) {
       try {
-        var simpleIds = productIds.map(function(id) {
-          var match = id.match(/\/Product\/(\d+)/);
-          return match ? match[1] : id;
-        });
+        var match = productGid.match(/\/Product\/(\d+)/);
+        var simpleId = match ? match[1] : productGid;
 
         var params = new URLSearchParams({
-          productIds: simpleIds.join(','),
+          productIds: simpleId,
           shop: domain,
           storefrontToken: token
         });
 
         var url = snsAppUrl + '/api/public/product-purchasable?' + params.toString();
-        console.log('[Purchasable] Fetching status for', simpleIds.length, 'products');
+        console.log('[Purchasable] Fetching status for product', simpleId);
 
         var response = await fetch(url);
 
         if (!response.ok) {
-          console.warn('[Purchasable] Fetch failed:', response.status);
-          return {};
+          console.warn('[Purchasable] Fetch failed for', simpleId, ':', response.status);
+          return null;
         }
 
         var result = await response.json();
 
-        if (!result.success || !result.data) {
-          console.warn('[Purchasable] Invalid response:', result);
-          return {};
+        if (!result.success || !result.data || !result.data[simpleId]) {
+          console.warn('[Purchasable] Invalid response for', simpleId, ':', result);
+          return null;
         }
 
-        // Convert simple IDs to GID keys for matching
-        var purchasableMap = {};
-        for (var simpleId in result.data) {
-          var gid = 'gid://shopify/Product/' + simpleId;
-          purchasableMap[gid] = result.data[simpleId];
-        }
-
-        console.log('[Purchasable] Received status for', Object.keys(purchasableMap).length, 'products');
-        return purchasableMap;
+        console.log('[Purchasable] Product', simpleId, '→', JSON.stringify(result.data[simpleId]));
+        return result.data[simpleId];
       } catch (error) {
-        console.error('[Purchasable] Error fetching status:', error);
-        return {};
+        console.error('[Purchasable] Error fetching status for', productGid, ':', error);
+        return null;
       }
     }
 
@@ -334,19 +644,16 @@
           var data = await fetchProductsPage({ query: query, pageSize: pageSize, after: after });
           hasNext = !!(data.pageInfo && data.pageInfo.hasNextPage); endCursor = data.pageInfo ? data.pageInfo.endCursor : null;
 
-          // Collect product IDs for bulk purchasability check
-          var productIds = data.edges.map(function(edge) { return edge.node.id; });
-
-          // Fetch purchasability status from server (all business logic is server-side)
-          var purchasableMap = await fetchPurchasability(productIds);
-
           for (var i = 0; i < (data.edges || []).length; i++) {
             var p = data.edges[i].node; var mount = createCard(grid, p);
-            var status = purchasableMap[p.id];
+
+            // Fetch purchasability per product
+            var status = await fetchPurchasabilityForProduct(p.id);
 
             // Show buy button only if server says product is purchasable
             if (status && status.isPurchasable) {
-              ui.createComponent('product', { id: p.id.replace('gid://shopify/Product/',''), node: mount, moneyFormat: '%24%7B%7Bamount%7D%7D', options: buyButtonOptions() });
+              var isPreOrder = !!(status.isPreOrder);
+              ui.createComponent('product', { id: p.id.replace('gid://shopify/Product/',''), node: mount, moneyFormat: '%24%7B%7Bamount%7D%7D', options: buyButtonOptions({ isPreOrder: isPreOrder }) });
             }
             // If not purchasable, the card is shown but no buy button is rendered
           }
@@ -370,7 +677,7 @@
     }
 
     window.renderProductListing = renderProductListing;
-    renderProductListing({ query: 'available_for_sale:true', pageSize: 8 });
+    renderProductListing({ query: '', pageSize: 8 });
   })();
 </script>
 
