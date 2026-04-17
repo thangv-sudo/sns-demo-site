@@ -474,9 +474,17 @@
                         
                         var currentUrl = window.location.href;
                         var cartId = cart.model.id;
+                        // Prefer checkoutUrl (new Cart API), fall back to webUrl (legacy Checkout API)
+                        var checkoutUrl = cart.model.checkoutUrl || cart.model.webUrl;
                         
-                        console.log('[Demo] Setting shopping_url cart attribute:', currentUrl);
                         console.log('[Demo] Cart ID:', cartId);
+                        console.log('[Demo] Checkout URL:', checkoutUrl);
+                        console.log('[Demo] Cart model:', cart.model);
+                        
+                        if (!checkoutUrl) {
+                            console.error('[Demo] No checkout URL on cart model!', cart.model);
+                            return;
+                        }
                         
                         // Call Storefront API to set cart attribute before checkout
                         fetch(apiUrl, {
@@ -494,10 +502,10 @@
                             })
                         }).then(function(resp) { return resp.json(); }).then(function(data) {
                             console.log('[Demo] Cart attribute set:', data);
-                            cart.checkout.open(cart.model.webUrl);
+                            cart.checkout.open(checkoutUrl);
                         }).catch(function(err) {
                             console.error('[Demo] Failed to set attribute, opening checkout anyway:', err);
-                            cart.checkout.open(cart.model.webUrl);
+                            cart.checkout.open(checkoutUrl);
                         });
                     };
                 }
