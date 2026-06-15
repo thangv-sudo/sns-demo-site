@@ -772,7 +772,7 @@
               if (status.isPod && status.podMessage) {
                 var pod = document.createElement('div');
                 pod.className = 'pl-pod-msg';
-                pod.textContent = status.podMessage;
+                pod.innerHTML = status.podMessage.replace(/^(\s*Note:)/i, '<strong>$1</strong>');
                 mount.parentNode.appendChild(pod);
               }
 
