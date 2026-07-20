@@ -71,6 +71,14 @@
     
     var snsAppUrl = 'https://simon-dev.glassboxx.com';
     var snsAppToken = '15b066ab7f653471b0d6788e993a539e'; // SNS Application Token (generated in admin panel)
+
+    // PRODUCTION store — used only for the pre-order demo item below.
+    var prodDomain    = 'shop-simonandschuster.myshopify.com';
+    var prodToken     = '26814b865284c57db2805caf7743685c'; // Prod Storefront Access Token
+    var prodApiUrl    = 'https://' + prodDomain + '/api/2025-01/graphql.json';
+    var prodSnsAppUrl = 'https://simon-prod.glassboxx.com';
+    var preOrderVariantId = '59621759615262';
+    var preOrderCartUrl   = 'https://simon-and-schuster.myshopify.com/cart/' + preOrderVariantId + ':1?channel=buy_button';
     
     // ============================================
     // SDK Configuration
@@ -667,6 +675,70 @@
     }
 
     /**
+     * Resolve the owning product (id, title, image, price) for a PROD-store
+     * variant id, using the production Storefront API. Used by the pre-order
+     * demo card so it can be rendered like the other products.
+     */
+    async function fetchProdVariantProduct(variantId) {
+      var gid = 'gid://shopify/ProductVariant/' + variantId;
+      var resp = await fetch(prodApiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': prodToken },
+        body: JSON.stringify({
+          query: `
+            query($id: ID!) {
+              node(id: $id) {
+                ... on ProductVariant {
+                  id
+                  product {
+                    id
+                    title
+                    featuredImage { url altText }
+                    priceRange { minVariantPrice { amount currencyCode } maxVariantPrice { amount currencyCode } }
+                  }
+                }
+              }
+            }`,
+          variables: { id: gid }
+        })
+      });
+      var json = await resp.json();
+      var node = json && json.data && json.data.node;
+      if (!node || !node.product) { console.warn('[Pre-order] Could not resolve product for variant', variantId, json); return null; }
+      var p = node.product;
+      return {
+        productId: _stripPrefix(p.id, 'Product'),
+        title: p.title,
+        imageUrl: p.featuredImage && p.featuredImage.url,
+        imageAlt: (p.featuredImage && p.featuredImage.altText) || p.title,
+        priceRange: p.priceRange
+      };
+    }
+
+    /**
+     * Minimal, store-correct buy-button options for the prod pre-order item.
+     * Kept separate from buyButtonOptions() so the prod component does not
+     * reuse the dev store's cart/checkout wiring (apiUrl/token, BXGY, etc.).
+     */
+    function prodPreOrderOptions() {
+      var btn = { ':hover': { 'background-color': '#1d1f1d' }, 'background-color': '#111211', ':focus': { 'background-color': '#1d1f1d' } };
+      return {
+        product: {
+          styles: { button: btn },
+          contents: { img: false, title: false, price: false },
+          text: { button: 'Pre Order' }
+        },
+        cart: {
+          useCustomGraphQL: true,
+          styles: { button: btn },
+          text: { total: 'Subtotal', notice: 'Taxes and shipping calculated at checkout.', button: 'Checkout' },
+          popup: false
+        },
+        toggle: { styles: { toggle: { 'background-color': '#111211', ':hover': { 'background-color': '#1d1f1d' }, ':focus': { 'background-color': '#1d1f1d' } } } }
+      };
+    }
+
+    /**
      * Fetch purchasability status for a single product.
      * All business logic (inventory thresholds, pre-order rules, scheduled dates)
      * is evaluated server-side.
@@ -750,19 +822,59 @@
         var root = document.getElementById('product-list'); root.innerHTML = '';
         var grid = document.createElement('div'); grid.className = 'pl-grid'; root.appendChild(grid);
 
-        // Static pre-order card — always shown first in the grid.
-        (function addPreorderCard() {
-          var card = document.createElement('div'); card.className = 'pl-card';
-          if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) card.classList.add('dark');
-          var title = document.createElement('div'); title.className = 'pl-title'; title.textContent = 'Pre-order';
-          var mount = document.createElement('div'); mount.className = 'pl-mount';
-          var link = document.createElement('a'); link.className = 'pl-btn';
-          link.href = 'https://simon-and-schuster.myshopify.com/cart/59621759615262:1?channel=buy_button';
-          link.textContent = 'Pre-order';
-          if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) link.classList.add('dark');
-          mount.appendChild(link);
-          card.appendChild(title); card.appendChild(mount); grid.appendChild(card);
-        })();
+        // ---------------------------------------------------------------
+        // Pre-order demo — the same title offered TWO ways, shown first.
+        //   Way 1: a plain link straight to the Shopify cart permalink.
+        //   Way 2: a full buy-button product component, like the other
+        //          products (rendered against the PROD store).
+        // ---------------------------------------------------------------
+
+        try {
+          var prodClient = ShopifyBuy.buildClient({ domain: prodDomain, storefrontAccessToken: prodToken });
+          var prodUi = ShopifyBuy.UI.init(prodClient, {}, '', { snsAppUrl: prodSnsAppUrl, enabled: true });
+          var pre = await fetchProdVariantProduct(preOrderVariantId);
+          if (pre && pre.productId) {
+            // Both cards share the same image/title/price; only the CTA differs.
+            function buildPreorderCard() {
+              var card = document.createElement('div'); card.className = 'pl-card';
+              if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) card.classList.add('dark');
+              var img = document.createElement('img'); img.className = 'pl-img'; img.alt = pre.imageAlt || pre.title || ''; if (pre.imageUrl) img.src = pre.imageUrl;
+              var title = document.createElement('div'); title.className = 'pl-title'; title.textContent = pre.title || 'Pre-order';
+              var price = document.createElement('div'); price.className = 'pl-price'; price.textContent = priceText(pre.priceRange);
+              var mount = document.createElement('div'); mount.className = 'pl-mount';
+              card.appendChild(img); card.appendChild(title); card.appendChild(price); card.appendChild(mount); grid.appendChild(card);
+              return mount;
+            }
+
+            // Way 1 — same card layout, but the buy button is a plain link.
+            // Styled to match the buy-button product component (black button).
+            var linkMount = buildPreorderCard();
+            var link = document.createElement('a');
+            link.href = preOrderCartUrl;
+            link.textContent = 'Pre Order';
+            link.style.cssText = 'display:block;width:100%;box-sizing:border-box;text-align:center;' +
+              'background-color:#111211;color:#fff;text-decoration:none;font-weight:700;' +
+              'padding:14px 18px;border-radius:6px;cursor:pointer;';
+            link.onmouseover = function(){ link.style.backgroundColor = '#1d1f1d'; };
+            link.onmouseout  = function(){ link.style.backgroundColor = '#111211'; };
+            linkMount.appendChild(link);
+            var linkDesc = document.createElement('div');
+            linkDesc.textContent = 'on protected page';
+            linkDesc.style.cssText = 'margin-top:8px;font-size:12px;color:#555;text-align:center;';
+            linkMount.appendChild(linkDesc);
+
+            // Way 2 — same card layout, rendered as a buy-button product component.
+            var pmount = buildPreorderCard();
+            prodUi.createComponent('product', {
+              id: pre.productId,
+              node: pmount,
+              moneyFormat: '%24%7B%7Bamount%7D%7D',
+              options: prodPreOrderOptions()
+            });
+          }
+        } catch (e) {
+          console.error('[Pre-order] Failed to render pre-order cards:', e);
+        }
         var query = (opts && opts.query) || 'available_for_sale:true';
         var pageSize = (opts && opts.pageSize) || 8; var endCursor = null, hasNext = false;
 
