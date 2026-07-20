@@ -46,6 +46,9 @@
 
 
 
+<!-- BXGY Promo Banner -->
+<div id="bxgy-banner" style="max-width:1100px;margin:16px auto 0;"></div>
+
 <!-- Product list container -->
 <div id="product-list" style="max-width:1100px;margin:24px auto;"></div>
 
@@ -56,10 +59,8 @@
     // ============================================
     
     // Shopify Storefront API
-    // var domain = 'simon-and-schuster-dev.myshopify.com';
-    // var token  = 'fa60e6d76fe042b8221f01d34419a020'; // Shopify Storefront Access Token
-    var domain = 'simon-and-schuster-uk-dev.myshopify.com';
-    var token  = 'caae2893413705a8d0dd752440424a17'; // Shopify Storefront Access Token
+    var domain = 'simon-and-schuster-dev.myshopify.com';
+    var token  = 'fa60e6d76fe042b8221f01d34419a020'; // Shopify Storefront Access Token
     var apiUrl = 'https://' + domain + '/api/2025-01/graphql.json';
     
     // SNS Application Configuration
@@ -68,7 +69,8 @@
     // var snsAppUrl = 'https://univ-ultimate-reprint-car.trycloudflare.com';
     // var snsAppToken = '384dfb30a06149874ff0b659319da703'; // local
     
-    var snsAppUrl = 'https://simonuk-dev.glassboxx.com';
+    var snsAppUrl = 'https://simon-dev.glassboxx.com';
+    var snsAppToken = '15b066ab7f653471b0d6788e993a539e'; // SNS Application Token (generated in admin panel)
     
     // ============================================
     // SDK Configuration
@@ -98,9 +100,406 @@
     .pl-actions{display:flex;justify-content:center;margin-top:16px}
     .pl-btn{padding:10px 16px;border-radius:8px;border:1px solid #ddd;cursor:pointer;background:#fff;display:inline-block;text-decoration:none;color:inherit}
     .pl-btn.dark{background:#fff;color:inherit;border-color:#ddd}
+    .bxgy-promo{padding:12px 16px;border-radius:8px;font-size:14px;font-weight:500;margin-bottom:8px;transition:background .3s,color .3s}
+    .bxgy-promo.qualified{background:#ecfdf5;color:#065f46}
+    .bxgy-promo.not-qualified{background:#fef3c7;color:#92400e}
+    .bxgy-promo .bxgy-tag{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:4px;margin-right:8px}
+    .bxgy-promo.qualified .bxgy-tag{background:#d1fae5;color:#047857}
+    .bxgy-promo.not-qualified .bxgy-tag{background:#fde68a;color:#92400e}
     `;
     var style = document.createElement('style'); style.innerText = css;
     (document.head || document.body).appendChild(style);
+
+    // ============================================================
+    // BUY X GET Y — Loaded from SNS public API
+    //   GET /api/public/buy-x-get-y?shop=<shop>.myshopify.com
+    // The merchant configures the campaign in the SNS admin; this demo
+    // fetches active settings and reconciles the cart against them.
+    // Demo limitations: only discountType="free" is honored, and
+    // getYType="products" + buyXType in {products, collections, any}.
+    // ============================================================
+    var bxgyRules = [];
+    var _bxgyRulesPromise; // assigned once renderBXGYBanner is defined
+
+    async function fetchGwpSettings() {
+      // TEMP: BXGY feature disabled
+      return [];
+      var url = snsAppUrl + '/api/public/buy-x-get-y?shop=' + encodeURIComponent(domain);
+      // Accept header is required — without it the server returns 500.
+      var resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      var json = await resp.json();
+      if (!json.success) throw new Error(json.message || 'GWP fetch failed');
+      return json.data.settings;
+    }
+
+    function _stripPrefix(gid, prefix) {
+      var m = String(gid).match(new RegExp('/' + prefix + '/(\\d+)'));
+      return m ? m[1] : gid;
+    }
+
+    async function _resolveCollectionProductIds(collectionGids) {
+      if (!collectionGids || !collectionGids.length) return [];
+      var query = 'query($ids:[ID!]!){nodes(ids:$ids){... on Collection{id products(first:250){edges{node{id}}}}}}';
+      var resp = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+        body: JSON.stringify({ query: query, variables: { ids: collectionGids } })
+      });
+      var json = await resp.json();
+      var ids = [];
+      ((json.data && json.data.nodes) || []).forEach(function(node) {
+        if (!node || !node.products) return;
+        node.products.edges.forEach(function(e) { ids.push(_stripPrefix(e.node.id, 'Product')); });
+      });
+      return ids;
+    }
+
+    async function _resolveProductFirstVariant(productGid) {
+      var query = 'query($id:ID!){product(id:$id){id title variants(first:1){edges{node{id price{amount} compareAtPrice{amount}}}}}}';
+      var resp = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+        body: JSON.stringify({ query: query, variables: { id: productGid } })
+      });
+      var json = await resp.json();
+      var p = json.data && json.data.product;
+      if (!p || !p.variants.edges.length) return null;
+      var v = p.variants.edges[0].node;
+      return {
+        variantId: _stripPrefix(v.id, 'ProductVariant'),
+        price: (v.compareAtPrice && v.compareAtPrice.amount) || (v.price && v.price.amount) || null
+      };
+    }
+
+    async function buildBxgyRulesFromAPI() {
+      var s;
+      try { s = await fetchGwpSettings(); }
+      catch (e) { console.warn('[BXGY] Could not load campaign:', e); return []; }
+
+      if (!s.isActiveNow) { console.log('[BXGY] No active campaign'); return []; }
+      if (s.discountType !== 'free') {
+        console.warn('[BXGY] Demo only supports discountType="free"; got "' + s.discountType + '"');
+        return [];
+      }
+
+      var buyProductIds = [];
+      if (s.buyXType === 'products') {
+        buyProductIds = (s.buyXProductIds || []).map(function(g) { return _stripPrefix(g, 'Product'); });
+      } else if (s.buyXType === 'collections') {
+        buyProductIds = await _resolveCollectionProductIds(s.buyXCollectionIds || []);
+      } else if (s.buyXType !== 'any') {
+        console.warn('[BXGY] Unsupported buyXType "' + s.buyXType + '"');
+        return [];
+      }
+
+      if (s.getYType !== 'products' || !(s.getYProductIds || []).length) {
+        console.warn('[BXGY] Demo only supports getYType="products" with at least one product; got "' + s.getYType + '"');
+        return [];
+      }
+      var giftInfo = await _resolveProductFirstVariant(s.getYProductIds[0]);
+      if (!giftInfo) { console.warn('[BXGY] Could not resolve gift variant for', s.getYProductIds[0]); return []; }
+
+      var slug = (s.campaignName || 'campaign').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'campaign';
+      return [{
+        id: 'bxgy-' + slug,
+        buyXType: s.buyXType,
+        buyProductIds: buyProductIds,
+        buyQuantity: s.buyXQuantity,
+        giftVariantId: giftInfo.variantId,
+        giftQuantity: s.getYQuantity,
+        maxPerOrder: s.usageLimitPerCustomer || null,
+        label: s.badgeText || 'Free Gift',
+        bannerText: s.promotionMessage || ('Buy ' + s.buyXQuantity + ', get a free gift'),
+        compareAtPrice: giftInfo.price ? Number(giftInfo.price) : null
+      }];
+    }
+
+    // ============================================================
+    // BXGY Engine — uses direct Storefront API GraphQL calls
+    // ============================================================
+    var _bxgyEngine = null;
+    var _bxgyDebounceTimer = null;
+
+    function BXGYEngine(cart, rules) {
+      this.cart = cart;
+      this.rules = rules;
+      this.giftVids = new Set(rules.map(function(r){ return String(r.giftVariantId); }));
+      this.busy = false;
+      this._lastGiftState = {};
+      _bxgyEngine = this;
+      var self = this;
+      setTimeout(function(){ self.reconcile(); }, 1000);
+    }
+
+    // --- Direct Storefront API helpers ---
+
+    BXGYEngine.prototype._gql = async function(query, variables) {
+      var resp = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+        body: JSON.stringify({ query: query, variables: variables })
+      });
+      return resp.json();
+    };
+
+    BXGYEngine.prototype._getCartId = function() {
+      return this.cart.model && this.cart.model.id;
+    };
+
+    BXGYEngine.prototype._fetchCartLines = async function() {
+      var cartId = this._getCartId();
+      if (!cartId) { console.log('[BXGY] No cart ID'); return []; }
+
+      var json = await this._gql(
+        'query($id:ID!){cart(id:$id){lines(first:50){edges{node{id quantity merchandise{...on ProductVariant{id product{id}}}}}}}}',
+        { id: cartId }
+      );
+
+      if (!json.data || !json.data.cart || !json.data.cart.lines) {
+        console.warn('[BXGY] Could not read cart lines:', json);
+        return [];
+      }
+
+      return json.data.cart.lines.edges.map(function(e) {
+        var n = e.node;
+        return {
+          lineId: n.id,
+          quantity: n.quantity,
+          variantId: n.merchandise.id.replace('gid://shopify/ProductVariant/', ''),
+          variantGid: n.merchandise.id,
+          productId: n.merchandise.product.id.replace('gid://shopify/Product/', ''),
+          productGid: n.merchandise.product.id
+        };
+      });
+    };
+
+    BXGYEngine.prototype._addLine = async function(variantGid, qty) {
+      var cartId = this._getCartId();
+      console.log('[BXGY] API → cartLinesAdd', variantGid, 'qty', qty);
+      var json = await this._gql(
+        'mutation($cartId:ID!,$lines:[CartLineInput!]!){cartLinesAdd(cartId:$cartId,lines:$lines){cart{id}userErrors{field message}}}',
+        { cartId: cartId, lines: [{ merchandiseId: variantGid, quantity: qty, attributes: [{ key: '_bxgy_gift', value: 'true' }] }] }
+      );
+      if (json.errors || (json.data && json.data.cartLinesAdd && json.data.cartLinesAdd.userErrors.length)) {
+        console.error('[BXGY] addLine error:', json);
+      }
+      return json;
+    };
+
+    BXGYEngine.prototype._updateLine = async function(lineId, qty) {
+      var cartId = this._getCartId();
+      console.log('[BXGY] API → cartLinesUpdate', lineId, 'qty', qty);
+      var json = await this._gql(
+        'mutation($cartId:ID!,$lines:[CartLineUpdateInput!]!){cartLinesUpdate(cartId:$cartId,lines:$lines){cart{id}userErrors{field message}}}',
+        { cartId: cartId, lines: [{ id: lineId, quantity: qty }] }
+      );
+      if (json.errors) console.error('[BXGY] updateLine error:', json);
+      return json;
+    };
+
+    BXGYEngine.prototype._removeLine = async function(lineId) {
+      var cartId = this._getCartId();
+      console.log('[BXGY] API → cartLinesRemove', lineId);
+      var json = await this._gql(
+        'mutation($cartId:ID!,$lineIds:[ID!]!){cartLinesRemove(cartId:$cartId,lineIds:$lineIds){cart{id}userErrors{field message}}}',
+        { cartId: cartId, lineIds: [lineId] }
+      );
+      if (json.errors) console.error('[BXGY] removeLine error:', json);
+      return json;
+    };
+
+    // Force Buy Button SDK to re-fetch cart and re-render.
+    // Mirrors the SDK's native quantity-update sequence:
+    //   fetchData() → assign model → updateCache(lineItems) → view.render()
+    // The updateCache step is critical — the SDK renders from a cached
+    // lineItems array, so without it morphdom diffs against stale state
+    // and externally-added lines (like our gifts) never appear in the DOM.
+    BXGYEngine.prototype._refreshSDK = async function() {
+      try {
+        var cart = this.cart;
+        var checkout = null;
+
+        if (typeof cart.fetchData === 'function') {
+          checkout = await cart.fetchData();
+          if (checkout) {
+            cart.model = checkout;
+            if (typeof cart.updateCache === 'function' && checkout.lineItems) {
+              cart.updateCache(checkout.lineItems);
+            }
+          }
+        } else {
+          // Legacy fallback for older SDK builds
+          var cartId = this._getCartId();
+          var client = cart.props && cart.props.client;
+          if (client && client.cart && client.cart.fetch) {
+            cart.model = await client.cart.fetch(cartId);
+          } else if (client && client.checkout && client.checkout.fetch) {
+            cart.model = await client.checkout.fetch(cartId);
+          }
+        }
+
+        if (cart.view && typeof cart.view.render === 'function') {
+          await cart.view.render();
+        } else if (typeof cart.render === 'function') {
+          cart.render();
+        }
+        console.log('[BXGY] SDK cart refreshed');
+      } catch (e) {
+        console.warn('[BXGY] SDK refresh failed:', e);
+      }
+    };
+
+    // --- Core reconciliation ---
+
+    BXGYEngine.prototype.reconcile = async function() {
+      if (this.busy) return;
+      this.busy = true;
+
+      try {
+        var cartId = this._getCartId();
+        if (!cartId) { console.log('[BXGY] No cart yet'); return; }
+
+        // Fetch live cart lines from Storefront API (always fresh)
+        var items = await this._fetchCartLines();
+        console.log('[BXGY] Reconcile — lines:', JSON.stringify(items));
+
+        var self = this;
+        function matchesBuy(li, rule) {
+          if (rule.buyXType === 'any') return true;
+          return rule.buyProductIds.indexOf(li.productId) !== -1;
+        }
+
+        // Aggregate qualifying qty per rule (excluding gifts)
+        var qtyByRule = {};
+        this.rules.forEach(function(rule) {
+          var total = 0;
+          items.forEach(function(li) {
+            if (self.giftVids.has(li.variantId)) return;
+            if (matchesBuy(li, rule)) total += li.quantity;
+          });
+          qtyByRule[rule.id] = total;
+        });
+        console.log('[BXGY] Qualifying qty by rule:', JSON.stringify(qtyByRule));
+
+        var cartChanged = false;
+
+        for (var ri = 0; ri < this.rules.length; ri++) {
+          var rule = this.rules[ri];
+
+          var n = Math.floor((qtyByRule[rule.id] || 0) / rule.buyQuantity);
+          if (rule.maxPerOrder) n = Math.min(n, rule.maxPerOrder);
+
+          var want = n * rule.giftQuantity;
+          var giftVid = String(rule.giftVariantId);
+          var gift = items.find(function(li){ return li.variantId === giftVid; });
+          var have = gift ? gift.quantity : 0;
+
+          // Detect manual removal
+          var wasPresent = this._lastGiftState[rule.id];
+          if (want > 0 && !gift && wasPresent) {
+            console.log('[BXGY] Gift manually removed, skipping re-add');
+            this._lastGiftState[rule.id] = false;
+            continue;
+          }
+          this._lastGiftState[rule.id] = have > 0;
+
+          if (want === have) continue;
+
+          console.log('[BXGY] Rule "' + rule.id + '": want=' + want + ' have=' + have);
+
+          if (want > 0 && !gift) {
+            await this._addLine('gid://shopify/ProductVariant/' + rule.giftVariantId, want);
+            this._lastGiftState[rule.id] = true;
+            cartChanged = true;
+          } else if (want > 0 && gift) {
+            await this._updateLine(gift.lineId, want);
+            cartChanged = true;
+          } else if (want === 0 && gift) {
+            console.log('[BXGY] Removing gift — trigger no longer met');
+            await this._removeLine(gift.lineId);
+            this._lastGiftState[rule.id] = false;
+            cartChanged = true;
+          }
+        }
+
+        // Refresh SDK so UI reflects changes
+        if (cartChanged) {
+          await this._refreshSDK();
+        }
+
+        this._emitStatus(qtyByRule);
+      } finally {
+        this.busy = false;
+      }
+    };
+
+    BXGYEngine.prototype._emitStatus = function(qtyByRule) {
+      var detail = this.rules.map(function(r) {
+        var have = qtyByRule[r.id] || 0;
+        var remaining = Math.max(0, r.buyQuantity - have);
+        return {
+          id: r.id,
+          label: r.label,
+          bannerText: r.bannerText,
+          qualified: remaining === 0,
+          remaining: remaining,
+          compareAtPrice: r.compareAtPrice
+        };
+      });
+
+      renderBXGYBanner(detail);
+      window.dispatchEvent(new CustomEvent('bxgy:status', { detail: detail }));
+    };
+
+    // ============================================================
+    // BXGY Promo Banner Renderer
+    // ============================================================
+    function renderBXGYBanner(promos) {
+      var container = document.getElementById('bxgy-banner');
+      if (!container) return;
+      container.innerHTML = '';
+
+      promos.forEach(function(p) {
+        var div = document.createElement('div');
+        div.className = 'bxgy-promo ' + (p.qualified ? 'qualified' : 'not-qualified');
+
+        var tag = document.createElement('span');
+        tag.className = 'bxgy-tag';
+        tag.textContent = p.label;
+
+        var msg = document.createElement('span');
+        if (p.qualified) {
+          msg.textContent = p.label + ' added to your cart!';
+        } else {
+          msg.textContent = 'Add ' + p.remaining + ' more to get: ' + p.bannerText;
+        }
+
+        div.appendChild(tag);
+        div.appendChild(msg);
+        container.appendChild(div);
+      });
+    }
+
+    // Kick off campaign load. Banner stays empty until settings arrive,
+    // then shows the not-qualified initial state. Engine is wired up
+    // inside cart.events.afterInit, gated on this same promise.
+    _bxgyRulesPromise = buildBxgyRulesFromAPI().then(function(rules) {
+      bxgyRules = rules;
+      if (rules.length) {
+        var initial = rules.map(function(r) {
+          return {
+            id: r.id,
+            label: r.label,
+            bannerText: r.bannerText,
+            qualified: false,
+            remaining: r.buyQuantity,
+            compareAtPrice: r.compareAtPrice
+          };
+        });
+        renderBXGYBanner(initial);
+      }
+      return rules;
+    });
 
     function buyButtonOptions(opts) {
       var buttonText = (opts && opts.isPreOrder) ? 'Pre Order' : 'Buy From Us';
@@ -152,7 +551,23 @@
             },
             popup: false,
             events: {
+                afterRender: function(cart) {
+                    // Debounce: wait 800ms so the cart model is fully updated
+                    if (_bxgyDebounceTimer) clearTimeout(_bxgyDebounceTimer);
+                    _bxgyDebounceTimer = setTimeout(function() {
+                      if (_bxgyEngine && !_bxgyEngine.busy) {
+                        _bxgyEngine.reconcile();
+                      }
+                    }, 800);
+                },
                 afterInit: function(cart) {
+                    _bxgyRulesPromise.then(function(rules) {
+                      if (rules.length) {
+                        console.log('[BXGY] Init — cart ID:', cart.model && cart.model.id);
+                        new BXGYEngine(cart, rules);
+                      }
+                    });
+
                     cart.onCheckout = function() {
                         cart._userEvent('openCheckout');
                         cart.props.tracker.track('Open cart checkout', {});
@@ -217,7 +632,8 @@
     function buildClient() { 
       return ShopifyBuy.buildClient({ 
         domain: domain, 
-        storefrontAccessToken: token
+        storefrontAccessToken: token,
+        snsAppToken: snsAppToken // SNS Application authentication token
       }); 
     }
 
@@ -414,5 +830,4 @@
 </script>
 
   </body>
-  <a href="https://simon-and-schuster.myshopify.com/cart/59621759615262:1?channel=buy_button">Pre-order</a>
 </html>
